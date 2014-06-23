@@ -1,0 +1,234 @@
+Machine Learning Write-up
+========================================================
+
+I. Introduction
+-------------------------
+This document comprises of the first component of Coursera online course Pratical Machine Learning's course project: Writeup. In this document, I outline the major steps I have taken to build the model for the data analysis and the motivations behind the steps.  
+
+The focus of analysis has been put on whether and how to maximize model performance while minimizing the use of training data and features available. 
+
+II. Dataset
+-------------------------
+The training and testing data are provided in this course. It has to be noted that the testing data only contains 20 samples, too small to be used to evaluate the model. Thus, it is only used for the purpose of unit test for the model, which comprises the second component of this project. 
+
+The training and testing data are below, which are provided by http://groupware.les.inf.puc-rio.br/har:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+III. Data Preprocessing
+-------------------------
+**Reading and Examining Data**
+```{r}
+data <- read.csv("pml-training.csv")
+```
+
+The 'str(data)' indicates that this data set has 19622 observations of  160 variables. The training data is in a good size and the dimension is pretty high. In particular, it shows that many columns are full of NA values. Because of this, the first intuition is to remove those columns that contains NAs, as well as empty cells. To do this:
+
+**Pruning and Examining Data**
+```{r}
+data[data==""] <- NA
+data = data[sapply(data, function(x) all(complete.cases(x)))]
+str(data)
+```
+The removal of these NAs and empty values reduces the dimension from 160 to 60, cutting it by more than half. A quick look at the remaining variables reveals that, the first few variables may be good candidates for further removal for the reasons:
+X: values runs from 1 to 19622, basically a serial number or row number, which shouldn't be used in training.
+user_name: if used, the trained model will be depending on individidual participants
+raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp: Not clear the exact meaning of these features, but they are time related values
+
+Instead of removing these variables immedicately and pursing other preprocessing techniques, let's build a first model and see how it works, and we can start from there based on the result. The next step is to partition the training data. Should we partition it into training, testing and validating sets, or training and testing sets only? Given it has a total of 19622 samples, which is a good size, it may be a good idea to produce three sets, rather than two, so that we have a completely unseen data set used to validate the eventual model, which won't be used for model training and tuning in any way. The Out of Sample error can be eventually evaluated on the validating set. 
+
+A good pratice is to split the data with a 6:2:2 ratio. To do that:
+
+**Include Data**
+```{r}
+library(caret)
+```
+
+**Data Partition**
+```{r}
+inTrain <- createDataPartition(y=data$classe,p=0.6,list=FALSE)
+training <- data[inTrain,]
+testingTemp <- data[-inTrain,]
+inTest <- createDataPartition(y=testingTemp$classe,p=0.5,list=FALSE)
+testing <- testingTemp[inTest,]
+validating <- testingTemp[-inTest,]
+```
+Now, check the dimension of the splits to make sure it's right.
+
+**Check Dimensions**
+```{r}
+dim(training); dim(testing); dim(validating)
+```
+
+IV. Initial Training and Evaluation
+-------------------------
+Now, we need to train and evalute the model. What classification model should I try and choose? Random Forest is my first consideration, for two reasons. First, this week's lecture has been talking about classificaiton with trees, and RF is generally considered as one of the best performing ML algorithms in many classification tasks; second, the authors in the paper who provided the original data also mentioned they were using random forest and got good results.
+
+For convenience, I choose to use the "train" and "confusionMatrix" functions available in caret package. Also, since I need to run multiple experiments of training and evaluation, I write a function to do the task, so that it can be reused later.
+
+A function called "trainer" is defined, which takes as parameters four arguments: 
+* training: the training data as a dataframe created through the data partition steps
+* testing: the testing (or validating) data as a dataframe created through the data partition steps
+* trMethod: the trainControl parameter, i.e. method="oob" or method="cv" number="5"
+* trModel: the classification model to be chosen, i.e. "RF" or "svmlinear"
+
+```{r}
+trainer <- function(training, testing, trMethod, trModel){
+    
+    # training and evaluation
+    trControl = trainControl(method=trMethod)
+    modelFit <- train(training$classe ~ ., method=trModel, trControl=trControl, data=training)
+    confMatrix <- confusionMatrix(testing$classe,predict(modelFit,testing))
+    
+    # model inspection
+    gbmImp <- varImp(modelFit, scale = FALSE)
+    importance <- gbmImp[[1]]
+    top20RowNames <- rownames(importance)[order(importance,decreasing=TRUE)][1:20]
+    
+    # return values
+    list(modelFit, confMatrix, gbmImp, importance, top20RowNames)
+}
+```
+The function retuns five values in a list:
+* modelFit: the resulting model
+* confMatrix: confusionMatrix to display accuracy matrics
+* gbmImp: the variable importance object, obtained through 'varImp' method
+* importance: the object which contains importance values of each variable in the model
+* top20RowNames: since there are 60 features in total, this value return the top 20 varialbes which are most important
+
+Now run the trainer and check the confusion matrix:
+
+```{r}
+
+# The resampling method selects "oob" for random forest here.
+output <- trainer(training, testing, "oob", "rf")
+confMatrix <- output[[2]]
+gbmImp <- output[[3]]
+confMatrix
+```
+Now, the confMatrix shows that all metrics are 1, which indicates it's a perfect model. However, this "too good to be true" scenario can hardly occur in real world. One guess is that this model is biased toward one or a few particular variables, which contribute most to the model in this training set. However, these variables won't contribute to a more generalized model formation, when another set of data is collected.  
+
+To inspect variable importance, I plot top 20 variables with the gbmImp object, returned by trainer.
+```{r}
+plot(gbmImp, top=20)
+```
+
+From the plot, it can be seen that the first variable X, which is the row number of the data frame as mentioned earlier, happens to be far more important feature than any one else. However, there is little utility of a row number as a predictor in a model in a general case. It's just a coincidence, probably due to the time series nature of this data set. Because of this, and the analysis earlier, the first 6 features are to be removed:
+X: values runs from 1 to 19622, basically a serial number or row number
+user_name: user names of individidual participants
+raw_timestamp_part_1: time stamp
+raw_timestamp_part_2: time stamp
+cvtd_timestamp: time stamp
+name_window:  not sure it's exact meaning 
+num_window:   not sure it's exact meaning
+
+
+V. Second Training and Evaluation with Feature Selection
+-------------------------
+To remove column 1-7:
+```{r}
+training <- training[,8:60]
+testing <- testing[,8:60]
+validating <- validating[,8:60]
+
+dim(training); dim(testing); dim(validating)
+```
+Train and evaluate the model again. To measure the time needed for the training, I added the function system.time() to record the training time (in seconds) needed, since training time is also an important consideration in building and evaluating a model. 
+
+```{r}
+# convert the time from seconds to minutes by dividing system time by 60
+system.time(output <- trainer(training, testing, "oob", "rf")) / 60
+confMatrix <- output[[2]]
+gbmImp <- output[[3]]
+confMatrix
+```
+
+After pruning the irrevalent features, the model still achieves a high accuracy of > 99%, as seen from the confusion matrix, and the training time is < 4 minutes, which is very acceptable. By now, I think a good model has been built for this prediction task, since the model performance is high and training time is short.
+
+Now, vadidate the model using validating set:
+```{r}
+confMatrix <- confusionMatrix(validating$classe,predict(output[[1]],validating))
+print(confMatrix)
+```
+
+Before concluding this project, I would like to explore a bit more with the data and training. In particular, I would like to know how the size of training data and features impact model performance and training time. It would be great if same or similar performance can be achieved with reduced training data and features. Section VI and VII contributes to the analysis of these two factors.
+
+VI. Learning Curve with respect to Training Data Size
+-------------------------
+To learn the impact of training data size on model performance, I wanted to train 10 models, each with a n/10 (n=1...10) sample of the original training data (11776 samples). Each data is evaluated with the same testing data. Then, I plot the learnin curve, which clearly demonstrates how training data size affects performance. 
+
+To factilitate the training and evaluation of multiple models automatically, I wrote another function learningCurve.R to automate this process. The function takes two arguments, 'training' and 'testing'. Inside the function, while the testing data remains the same, the training data is split with n/10 (n = 1...10) in 10 iterations. Each split represents a new training data set.
+
+```{r}
+learningCurve <- function(training,testing){
+    
+    n = 1;
+    r = 0;
+    # Create a matrix to store trainingFactor, training time and model accuracy, used for learning curve plot.
+    lcMatrix = matrix(nrow=16,ncol=3,dimnames=list(NULL,c("trainingSize", "trainingTime", "accuracy")))
+    for(n in 1:16){
+        r = r + 0.0625
+        inTrain <- createDataPartition(y=training$classe,p=r,list=FALSE)
+        smallTraining <- training[inTrain,]
+        print(dim(smallTraining)); print(dim(testing))
+        trainingTime <- system.time(output<-trainer(smallTraining,testing,"oob", "rf"))[3]/60
+        confMatrix <- output[[2]]
+        overall.accuracy <- round(confMatrix$overall['Accuracy'],digits=3)
+        print(overall.accuracy)
+        lcMatrix[n,] <- c(dim(smallTraining)[1], round(trainingTime,digits=3), overall.accuracy)
+    }
+    
+    lcMatrix
+}
+```
+
+Now call function learningCurve to plot the learning curve.
+```{r}
+require(ggplot2)
+require(reshape2)
+lcMatrix <- learningCurve(training,testing)
+ggplot(melt(as.data.frame(lcMatrix), id="accuracy"), 
+        aes(x = accuracy, y = value, color = variable)) + 
+        geom_point()
+```
+From the plot, how trainingSize, training time and accuracy go on the plot.
+
+VI. Learning Curve with One Feature training
+-------------------------
+One observation was that this data seems to be very unique, in the sense that a number of features can produce very high accuracy, even if the first 7 columns are removed, as described above. Because of this, I want to test how model looks like when only one feature is used. To do this, I wrote another function to train 53 models with one feature only each time, and then plot the model accuracy.
+
+```{r}
+oneFeatureTraining <- function(training){
+    
+    n = 1;
+    iteration = dim(training)[2]
+    type = training[,"classe"]
+    print(dim(training));
+    
+    # Create a matrix to store trainingFactor, training time and model accuracy, used for learning curve plot.
+    lcMatrix = matrix(nrow=iteration,ncol=2,dimnames=list(NULL,c("featureNo", "accuracy")))
+    for(n in 1:iteration){
+        smallTraining <- as.data.frame(training[,n])
+        smallTraining["classe"] <- type
+     
+        trControl = trainControl(method="oob")
+        modelFit <- train(training$classe ~ ., method="rf", trControl=trControl, data=training)
+        overall.accuracy = round(max(modelFit["results"][[1]][,"Accuracy"]),digits=3)
+        lcMatrix[n,] <- c(n, overall.accuracy)
+    }
+    lcMatrix
+}
+```
+
+Now call function featureSelection to plot the learning curve. In order to speed up the training, I take 1/3 of the training data for this experiment. This is fine because the main purpose of this analysis is to see how feature size impacts model accuracy.
+
+```{r}
+inTrain <- createDataPartition(y=training$classe,p=0.3,list=FALSE)
+smallTraining <- training[inTrain,]
+lcMatrix <- oneFeatureTraining(smallTraining)
+ggplot(melt(as.data.frame(lcMatrix), id="accuracy"), 
+        aes(x = value, y = accuracy, color = variable)) + 
+        geom_point() + scale_x_continuous(breaks=1:dim(smallTraining)[2])
+```
